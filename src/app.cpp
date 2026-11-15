@@ -649,7 +649,7 @@ struct App {
         int y = monitor.rcWork.bottom - height - gap;
         for (auto& entry : popups) {
             if (y < monitor.rcWork.top + gap) { y = monitor.rcWork.bottom - height - gap; x -= width + gap; }
-            x = std::max(x, monitor.rcWork.left + gap);
+            x = std::max(x, static_cast<int>(monitor.rcWork.left) + gap);
             SetWindowPos(entry.second->window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             y -= height + gap;
         }

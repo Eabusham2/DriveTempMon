@@ -1,0 +1,145 @@
+name: Windows build, verify, and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drivetempmon-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and verify Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set release version
+        id: version
+        run: |
+          $version = "1.0.$env:GITHUB_RUN_NUMBER"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "DTM_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Configure static native build
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-DDTM_VERSION=$env:DTM_VERSION" -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Verify temperature policy and hardware response parsers
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Verify native UI, tray lifecycle, single instance, and portable startup
+        run: ./scripts/Test-Windows.ps1 -Executable ./build/Release/DriveTempMon.exe
+      - name: Measure actual idle process footprint
+        run: ./scripts/Measure-Footprint.ps1 -Executable ./build/Release/DriveTempMon.exe -SampleSeconds 40
+      - name: Package portable executable and installer
+        run: |
+          New-Item -ItemType Directory dist -Force | Out-Null
+          $binary = (Resolve-Path ./build/Release/DriveTempMon.exe).Path
+          $dist = (Resolve-Path ./dist).Path
+          Copy-Item $binary "$dist/DriveTempMon-$env:DTM_VERSION-windows-x64-portable.exe"
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path $compiler)) {
+            $compiler = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          }
+          & $compiler "/DAppVersion=$env:DTM_VERSION" "/DBinaryPath=$binary" "/DReleaseDir=$dist" ./installer/DriveTempMon.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+      - name: Verify real installer and uninstall lifecycle
+        run: |
+          ./scripts/Test-Installer.ps1 -Installer "./dist/DriveTempMon-$env:DTM_VERSION-windows-x64-setup.exe"
+      - name: Collect verified release evidence and checksums
+        run: |
+          Copy-Item ./test-output/footprint.json, ./test-output/FOOTPRINT.md, ./test-output/ui-smoke.json, ./test-output/windows-integration.json, ./test-output/installer-integration.json ./dist/
+          Copy-Item ./LICENSE ./dist/LICENSE.txt
+          $installer = Get-Item "./dist/DriveTempMon-$env:DTM_VERSION-windows-x64-setup.exe"
+          $footprint = Get-Content ./dist/footprint.json -Raw | ConvertFrom-Json
+          $footprint | Add-Member -NotePropertyName installerBytes -NotePropertyValue $installer.Length
+          $installation = Get-Content ./dist/installer-integration.json -Raw | ConvertFrom-Json
+          $footprint | Add-Member -NotePropertyName installedProgramBytes -NotePropertyValue $installation.installedProgramBytes
+          $footprint | ConvertTo-Json -Depth 10 | Set-Content ./dist/footprint.json -Encoding utf8
+          "`nInstaller download: $($installer.Length) bytes. Installed program files: $($installation.installedProgramBytes) bytes (including uninstaller; excludes per-user settings and Windows task metadata)." | Add-Content ./dist/FOOTPRINT.md -Encoding utf8
+          $hashes = Get-ChildItem ./dist -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $hashes | Set-Content ./dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content ./dist/FOOTPRINT.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-windows-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-test-diagnostics
+          path: |
+            test-output/*.json
+            test-output/*.md
+            test-output/*.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  release:
+    name: Publish validated release
+    needs: windows
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download only the successful build's assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-windows-release
+          path: dist
+      - name: Publish immutable version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.windows.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS.txt
+          tag="v${RELEASE_VERSION}"
+          title="DriveTempMon ${RELEASE_VERSION}"
+          {
+            printf '%s\n' "Native Windows x64 drive-temperature monitoring." ""
+            printf '%s\n' "Choose **setup.exe** for installation with startup registration, or **portable.exe** for a standalone file with a startup toggle." ""
+            printf '%s\n' "Built from commit \`${RELEASE_COMMIT}\`. Native policy/parser tests, UI/tray smoke tests, portable startup, installer installation, and uninstallation all passed before publication." ""
+            printf '%s\n' "The binaries are unsigned. Windows may display an unknown-publisher/SmartScreen prompt. SMART access requires administrator rights." ""
+            cat FOOTPRINT.md
+          } > ../release-notes.md
+          if gh release view "$tag" --json isDraft,targetCommitish > ../existing-release.json 2>/dev/null; then
+            target="$(jq -r .targetCommitish ../existing-release.json)"
+            test "$target" = "$RELEASE_COMMIT" || { printf '%s\n' 'Refusing to replace a release for a different commit.'; exit 1; }
+            if [ "$(jq -r .isDraft ../existing-release.json)" = "false" ]; then
+              printf '%s\n' "Release $tag already published for this exact commit; preserving it."
+              exit 0
+            fi
+            gh release upload "$tag" ./* --clobber
+            gh release edit "$tag" --notes-file ../release-notes.md --title "$title"
+          else
+            gh release create "$tag" ./* --target "$RELEASE_COMMIT" --title "$title" --notes-file ../release-notes.md --draft
+          fi
+          gh release edit "$tag" --draft=false --latest

@@ -1,0 +1,3 @@
+#pragma once
+#define DTM_VERSION "@DTM_VERSION@"
+#define DTM_VERSION_W L"@DTM_VERSION@"

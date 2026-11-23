@@ -238,3 +238,12 @@ its implementation and verification. CI results are available in
 ## License
 
 [MIT](LICENSE). Copyright © 2026 Eyad (Eabusham2).
+
+## Search keywords (ignore)
+
+`drivetempmon`, `windows`, `win32`, `cpp`, `drive-temperature`, `disk-temperature`,
+`hdd-temperature`, `ssd-temperature`, `nvme-temperature`, `temperature-monitor`, `temperature-alerts`, `smart`,
+`nvme`, `sata`, `ata-smart`, `usb-sata`, `scsi`, `sas`,
+`hardware-monitoring`, `storage-monitoring`, `system-tray`, `tray-application`, `desktop-alerts`, `fullscreen-alerts`,
+`speech-alerts`, `windows-sapi`, `per-drive-thresholds`, `device-discovery`, `task-scheduler`, `start-with-windows`,
+`portable-app`, `native-desktop`, `ini-settings`, `single-instance`, `cmake`, `inno-setup`

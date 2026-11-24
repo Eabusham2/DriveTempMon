@@ -62,6 +62,7 @@ jobs:
       - name: Collect verified release evidence and checksums
         run: |
           Copy-Item ./test-output/footprint.json, ./test-output/FOOTPRINT.md, ./test-output/ui-smoke.json, ./test-output/windows-integration.json, ./test-output/installer-integration.json ./dist/
+          Copy-Item ./test-output/drive-nicknames*.png ./dist/
           Copy-Item ./LICENSE ./dist/LICENSE.txt
           $installer = Get-Item "./dist/DriveTempMon-$env:DTM_VERSION-windows-x64-setup.exe"
           $footprint = Get-Content ./dist/footprint.json -Raw | ConvertFrom-Json
@@ -92,6 +93,7 @@ jobs:
             test-output/*.json
             test-output/*.md
             test-output/*.log
+            test-output/*.png
             build/Testing/Temporary/LastTest.log
           if-no-files-found: warn
           retention-days: 14

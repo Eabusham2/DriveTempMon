@@ -60,6 +60,7 @@ constexpr int kMenuDriveBase = 2000;
 constexpr int kSaveButton = 201;
 constexpr int kCancelButton = 202;
 constexpr int kDefaultsButton = 203;
+constexpr int kNicknameButton = 204;
 constexpr COLORREF kInk = RGB(25, 35, 47);
 constexpr COLORREF kMuted = RGB(94, 107, 122);
 constexpr COLORREF kPanel = RGB(247, 249, 251);
@@ -301,6 +302,7 @@ struct SettingsWindow {
     App* app = nullptr;
     std::wstring id;
     bool global = false;
+    bool nickname = false;
     HWND window = nullptr;
     std::array<HWND, 6> edits{};
     HWND alerts = nullptr;
@@ -327,6 +329,7 @@ struct App {
     std::array<HICON, 6> icons{};
     std::array<HBITMAP, 6> menuBitmaps{};
     HFONT normalFont = nullptr;
+    HFONT smallFont = nullptr;
     HFONT boldFont = nullptr;
     HFONT titleFont = nullptr;
     HBRUSH whiteBrush = nullptr;
@@ -374,9 +377,11 @@ struct App {
     }
     void createFonts() {
         if (normalFont) DeleteObject(normalFont);
+        if (smallFont) DeleteObject(smallFont);
         if (boldFont) DeleteObject(boldFont);
         if (titleFont) DeleteObject(titleFont);
         normalFont = font(10, FW_NORMAL);
+        smallFont = font(8, FW_NORMAL);
         boldFont = font(10, FW_SEMIBOLD);
         titleFont = font(18, FW_SEMIBOLD);
     }
@@ -389,6 +394,10 @@ struct App {
     const dtm::Drive* find(const std::wstring& id) const {
         const auto iterator = std::find_if(drives.begin(), drives.end(), [&id](const dtm::Drive& d) { return d.id == id; });
         return iterator == drives.end() ? nullptr : &*iterator;
+    }
+    const std::wstring& displayName(const dtm::Drive& drive) const {
+        const auto found = settings.nicknames.find(drive.id);
+        return found == settings.nicknames.end() || found->second.empty() ? drive.name : found->second;
     }
     std::vector<std::wstring> hotIds() const {
         std::vector<std::wstring> ids;
@@ -428,7 +437,7 @@ struct App {
         const dtm::Drive* hottest = nullptr;
         for (const auto& d : drives)
             if (d.celsius != dtm::kUnknownTemperature && (!hottest || d.celsius > hottest->celsius)) hottest = &d;
-        if (hottest) tip += L" \u00b7 " + hottest->name + L": " + TempText(*hottest);
+        if (hottest) tip += L" \u00b7 " + displayName(*hottest) + L": " + TempText(*hottest);
         else tip += drives.empty() ? L" \u00b7 Looking for drives" : L" \u00b7 Temperature unavailable";
         wcsncpy_s(icon.szTip, tip.c_str(), _TRUNCATE);
         if (add || !trayAdded) {
@@ -461,7 +470,7 @@ struct App {
         const int selection = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
         SendMessageW(list, LB_RESETCONTENT, 0, 0);
-        for (const auto& d : drives) SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(d.name.c_str()));
+        for (const auto& d : drives) SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(displayName(d).c_str()));
         if (selection >= 0 && selection < static_cast<int>(drives.size()))
             SendMessageW(list, LB_SETCURSEL, selection, 0);
         SendMessageW(list, WM_SETREDRAW, TRUE, 0);
@@ -541,8 +550,9 @@ struct App {
         spokenIds.clear();
         for (const auto* d : candidates) {
             const wchar_t* kind = d->kind == dtm::DriveKind::SSD ? L"SSD" : d->kind == dtm::DriveKind::HDD ? L"HDD" : L"drive";
-            std::wstring name = d->shortName.empty() ? dtm::shortDriveName(d->name, d->number) : d->shortName;
-            if (name.size() > 10) name.resize(10);
+            const auto nickname = settings.nicknames.find(d->id);
+            std::wstring name = nickname != settings.nicknames.end() && !nickname->second.empty() ? nickname->second :
+                (d->shortName.empty() ? dtm::shortDriveName(d->name, d->number) : d->shortName).substr(0, 10);
             sentence += L"Your " + std::wstring(kind) + L" " + name + L" is " +
                         std::to_wstring(d->celsius) + L" degrees Celsius. ";
             spokenIds.push_back(d->id);
@@ -624,11 +634,11 @@ struct App {
                     popup->id = d->id;
                     popup->dpi = dpi;
                     popup->window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                        kPopupClass, (L"DriveTempMon: " + d->name + L" " + TempText(*d)).c_str(), WS_POPUP,
+                        kPopupClass, (L"DriveTempMon: " + displayName(*d) + L" " + TempText(*d)).c_str(), WS_POPUP,
                         0, 0, px(360), px(112), nullptr, nullptr, instance, popup.get());
                     if (popup->window) { popups.emplace(d->id, std::move(popup)); created = true; }
                 } else if (readingsChanged) {
-                    SetWindowTextW(iterator->second->window, (L"DriveTempMon: " + d->name + L" " + TempText(*d)).c_str());
+                    SetWindowTextW(iterator->second->window, (L"DriveTempMon: " + displayName(*d) + L" " + TempText(*d)).c_str());
                     InvalidateRect(iterator->second->window, nullptr, FALSE);
                 }
             }
@@ -660,24 +670,30 @@ struct App {
         updateAlerts();
         InvalidateRect(list, nullptr, FALSE);
     }
-    void showSettings(const std::wstring& id = {});
+    void showSettings(const std::wstring& id = {}, bool nickname = false);
     void contextMenu() {
         HMENU menu = CreatePopupMenu();
+        const auto menuDrives = drives; // Menu messages can arrive during sensor/hotplug updates.
         std::vector<std::wstring> menuIds;
         AppendMenuW(menu, MF_STRING, kMenuOpen, L"Open");
         SetMenuDefaultItem(menu, kMenuOpen, FALSE);
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         if (drives.empty()) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"No drives detected yet");
-        for (std::size_t i = 0; i < drives.size(); ++i) {
-            const auto& d = drives[i];
+        for (std::size_t i = 0; i < menuDrives.size(); ++i) {
+            const auto& d = menuDrives[i];
             menuIds.push_back(d.id);
             const auto level = dtm::temperatureLevel(d.celsius, dtm::forDrive(settings, d.id));
-            std::wstring name = d.name + L"\t" + TempText(d);
+            std::wstring name = displayName(d) + L"\t" + TempText(d);
             MENUITEMINFOW item{sizeof(item)};
             item.fMask = MIIM_STRING | MIIM_ID | MIIM_BITMAP;
             item.wID = kMenuDriveBase + static_cast<UINT>(i);
             item.dwTypeData = name.data();
             item.hbmpItem = menuBitmaps[static_cast<unsigned>(level)];
+            if (displayName(d) != d.name) {
+                item.fMask = MIIM_FTYPE | MIIM_ID | MIIM_DATA;
+                item.fType = MFT_OWNERDRAW;
+                item.dwItemData = reinterpret_cast<ULONG_PTR>(&d);
+            }
             InsertMenuItemW(menu, static_cast<UINT>(-1), TRUE, &item);
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -693,6 +709,57 @@ struct App {
         else if (choice == kMenuQuit) DestroyWindow(main);
         else if (choice >= kMenuDriveBase && choice < kMenuDriveBase + static_cast<int>(menuIds.size()))
             showSettings(menuIds[static_cast<std::size_t>(choice - kMenuDriveBase)]);
+    }
+    void drawName(HDC dc, const dtm::Drive& drive, RECT rect, COLORREF originalColor = kMuted) const {
+        const auto& name = displayName(drive);
+        RECT primary = rect;
+        if (name != drive.name) {
+            SIZE extent{};
+            GetTextExtentPoint32W(dc, name.c_str(), static_cast<int>(name.size()), &extent);
+            primary.right = primary.left + std::min(extent.cx, (rect.right - rect.left) / 2);
+        }
+        DrawTextW(dc, name.c_str(), -1, &primary, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (name != drive.name) {
+            rect.left = primary.right + px(8);
+            HGDIOBJ previous = SelectObject(dc, smallFont);
+            const COLORREF color = SetTextColor(dc, originalColor);
+            DrawTextW(dc, drive.name.c_str(), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            SetTextColor(dc, color);
+            SelectObject(dc, previous);
+        }
+    }
+    void measureMenuDrive(MEASUREITEMSTRUCT& item) const {
+        const auto& drive = *reinterpret_cast<const dtm::Drive*>(item.itemData);
+        HDC dc = GetDC(main);
+        HGDIOBJ previous = SelectObject(dc, normalFont);
+        SIZE name{}, original{};
+        const auto& label = displayName(drive);
+        GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &name);
+        SelectObject(dc, smallFont);
+        GetTextExtentPoint32W(dc, drive.name.c_str(), static_cast<int>(drive.name.size()), &original);
+        SelectObject(dc, previous);
+        ReleaseDC(main, dc);
+        item.itemWidth = static_cast<UINT>(std::min(px(520), static_cast<int>(name.cx + original.cx) + px(142)));
+        item.itemHeight = static_cast<UINT>(px(28));
+    }
+    void drawMenuDrive(const DRAWITEMSTRUCT& item) const {
+        const auto& drive = *reinterpret_cast<const dtm::Drive*>(item.itemData);
+        const int saved = SaveDC(item.hDC);
+        const bool selected = (item.itemState & ODS_SELECTED) != 0;
+        FillRect(item.hDC, &item.rcItem, GetSysColorBrush(selected ? COLOR_HIGHLIGHT : COLOR_MENU));
+        SetBkMode(item.hDC, TRANSPARENT);
+        SelectObject(item.hDC, GetStockObject(DC_BRUSH));
+        SetDCBrushColor(item.hDC, LevelColor(dtm::temperatureLevel(drive.celsius, dtm::forDrive(settings, drive.id))));
+        SelectObject(item.hDC, GetStockObject(NULL_PEN));
+        const int y = (item.rcItem.top + item.rcItem.bottom - px(11)) / 2;
+        Ellipse(item.hDC, item.rcItem.left + px(10), y, item.rcItem.left + px(21), y + px(11));
+        SelectObject(item.hDC, normalFont);
+        SetTextColor(item.hDC, GetSysColor(selected ? COLOR_HIGHLIGHTTEXT : COLOR_MENUTEXT));
+        RECT name{item.rcItem.left + px(32), item.rcItem.top, item.rcItem.right - px(100), item.rcItem.bottom};
+        drawName(item.hDC, drive, name, selected ? RGB(220, 220, 220) : kMuted);
+        RECT temp{item.rcItem.right - px(92), item.rcItem.top, item.rcItem.right - px(12), item.rcItem.bottom};
+        DrawTextW(item.hDC, TempText(drive).c_str(), -1, &temp, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        RestoreDC(item.hDC, saved);
     }
     void drawMain(HDC dc) {
         RECT client{};
@@ -741,7 +808,7 @@ struct App {
         SetTextColor(item.hDC, kInk);
         HGDIOBJ oldFont = SelectObject(item.hDC, boldFont);
         RECT name{item.rcItem.left + px(34), item.rcItem.top + px(8), item.rcItem.right - px(104), item.rcItem.top + px(29)};
-        DrawTextW(item.hDC, d.name.c_str(), -1, &name, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        drawName(item.hDC, d, name);
         RECT temp{item.rcItem.right - px(102), item.rcItem.top + px(8), item.rcItem.right - px(12), item.rcItem.top + px(29)};
         SetTextColor(item.hDC, d.celsius == dtm::kUnknownTemperature ? kMuted : color);
         const auto text = TempText(d);
@@ -783,6 +850,7 @@ struct App {
         for (const auto icon : icons) if (icon) DestroyIcon(icon);
         for (const auto bitmap : menuBitmaps) if (bitmap) DeleteObject(bitmap);
         if (normalFont) DeleteObject(normalFont);
+        if (smallFont) DeleteObject(smallFont);
         if (boldFont) DeleteObject(boldFont);
         if (titleFont) DeleteObject(titleFont);
         if (whiteBrush) DeleteObject(whiteBrush);
@@ -833,10 +901,35 @@ struct App {
         applyReadings();
         const bool windowCreated = IsWindow(main) != FALSE;
         const bool initialGreen = trayLevel() == dtm::Level::Green && popups.empty();
+        showSettings(fixture.id);
+        const HWND limitsWindow = settingsWindow;
+        SetDlgItemTextW(limitsWindow, 312, L"65"); // An unsaved limit must survive renaming.
+        SendMessageW(limitsWindow, WM_COMMAND, kNicknameButton, 0);
+        const bool nicknameDialog = settingsWindow && settingsWindow != limitsWindow && !IsWindowEnabled(limitsWindow);
+        SetDlgItemTextW(settingsWindow, 310, L"  Games & Media SSD  ");
+        SendMessageW(settingsWindow, WM_COMMAND, kSaveButton, 0);
+        wchar_t pendingLimit[8]{};
+        GetDlgItemTextW(limitsWindow, 312, pendingLimit, 8);
+        const bool nicknameSaved = displayName(drives[0]) == L"Games & Media SSD" &&
+            drives[0].name == fixture.name && settings.drives.empty() && settingsWindow == limitsWindow &&
+            IsWindowEnabled(limitsWindow) && wcscmp(pendingLimit, L"65") == 0;
+        SendMessageW(limitsWindow, WM_COMMAND, kNicknameButton, 0);
+        SetDlgItemTextW(settingsWindow, 310, L"Cancelled name");
+        SendMessageW(settingsWindow, WM_COMMAND, kCancelButton, 0);
+        const bool nicknameCancelled = displayName(drives[0]) == L"Games & Media SSD";
+        SendMessageW(limitsWindow, WM_COMMAND, kNicknameButton, 0);
+        SetDlgItemTextW(settingsWindow, 310, L"   ");
+        SendMessageW(settingsWindow, WM_COMMAND, kSaveButton, 0);
+        const bool nicknameCleared = displayName(drives[0]) == fixture.name && settings.nicknames.empty();
+        SendMessageW(limitsWindow, WM_COMMAND, kCancelButton, 0);
+        settings.nicknames[fixture.id] = L"Games & Media SSD";
         drives[0].celsius = 51;
         applyReadings();
         const bool popupCreated = popups.size() == 1 &&
             (GetWindowLongPtrW(popups.begin()->second->window, GWL_EXSTYLE) & WS_EX_TOPMOST);
+        wchar_t popupTitle[128]{};
+        if (!popups.empty()) GetWindowTextW(popups.begin()->second->window, popupTitle, 128);
+        const bool nicknameAlert = std::wstring(popupTitle) == L"DriveTempMon: Games & Media SSD 51 \u00b0C";
         fullscreenOverride = 1;
         updateAlerts();
         const bool fullscreenSuppressed = popups.empty();
@@ -886,7 +979,8 @@ struct App {
         smokeSpeechEnabled = false;
         const bool passed = windowCreated && trayAdded && initialGreen && popupCreated &&
             fullscreenSuppressed && popupRestored && dismissed && rearmed && closeToTray && noMaximize &&
-            synthesized && repeatedAfterSilence && visibleWhileMinimized;
+            synthesized && repeatedAfterSilence && visibleWhileMinimized && nicknameDialog &&
+            nicknameSaved && nicknameCancelled && nicknameCleared && nicknameAlert;
         std::ostringstream json;
         auto flag = [](bool value) { return value ? "true" : "false"; };
         json << "{\n  \"passed\": " << flag(passed) << ",\n"
@@ -894,6 +988,11 @@ struct App {
              << "  \"window_created\": " << flag(windowCreated) << ",\n"
              << "  \"tray_added\": " << flag(trayAdded) << ",\n"
              << "  \"initial_green\": " << flag(initialGreen) << ",\n"
+             << "  \"nickname_dialog\": " << flag(nicknameDialog) << ",\n"
+             << "  \"nickname_save_preserves_limits\": " << flag(nicknameSaved) << ",\n"
+             << "  \"nickname_cancel\": " << flag(nicknameCancelled) << ",\n"
+             << "  \"nickname_clear\": " << flag(nicknameCleared) << ",\n"
+             << "  \"nickname_alert\": " << flag(nicknameAlert) << ",\n"
              << "  \"red_popup_created\": " << flag(popupCreated) << ",\n"
              << "  \"fullscreen_popup_suppressed\": " << flag(fullscreenSuppressed) << ",\n"
              << "  \"popup_restored\": " << flag(popupRestored) << ",\n"
@@ -908,12 +1007,34 @@ struct App {
              << "  \"speech_test_measured_gap_ms\": " << measuredGap << "\n}\n";
         const bool reported = WriteUtf8File(outputPath, json.str());
         exitCode = passed && reported ? 0 : 2;
+        // Example drives for the native UI capture in Test-Windows.ps1; never sensor data.
+        settings.speech = false;
+        fullscreenOverride = 0;
+        drives = {fixture, fixture, fixture};
+        drives[0].name = L"Samsung 990 PRO"; drives[0].celsius = 34;
+        drives[1].id = L"preview-games"; drives[1].name = L"WD Blue SA510"; drives[1].celsius = 46;
+        drives[2].id = L"preview-backups"; drives[2].name = L"Seagate BarraCuda";
+        drives[2].kind = dtm::DriveKind::HDD; drives[2].celsius = 38;
+        settings.nicknames = {{fixture.id, L"Windows"}, {drives[1].id, L"Games"}, {drives[2].id, L"Backups"}};
+        applyReadings();
+        show();
+        SetWindowTextW(main, L"DriveTempMon Nickname Preview");
+        const auto previewDeadline = GetTickCount64() + 10000;
+        while (!GetPropW(main, L"DriveTempMon.PreviewCaptured") && GetTickCount64() < previewDeadline) {
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, 50, QS_ALLINPUT);
+            MSG pending{};
+            while (PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&pending);
+                DispatchMessageW(&pending);
+            }
+        }
+        RemovePropW(main, L"DriveTempMon.PreviewCaptured");
         DestroyWindow(main);
     }
 };
 
-void App::showSettings(const std::wstring& id) {
-    if (settingsWindow && IsWindow(settingsWindow)) {
+void App::showSettings(const std::wstring& id, bool nickname) {
+    if (!nickname && settingsWindow && IsWindow(settingsWindow)) {
         ShowWindow(settingsWindow, SW_SHOWNORMAL);
         SetForegroundWindow(settingsWindow);
         return;
@@ -922,17 +1043,20 @@ void App::showSettings(const std::wstring& id) {
     context->app = this;
     context->id = id;
     context->global = id.empty();
+    context->nickname = nickname;
     context->dpi = dpi;
-    const int height = context->global ? 500 : 332;
+    const int height = nickname ? 190 : context->global ? 500 : 332;
     RECT outer{0, 0, px(400), px(height)};
     AdjustWindowRectExForDpi(&outer, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME, dpi);
     RECT parent{};
-    GetWindowRect(main, &parent);
+    HWND owner = nickname && settingsWindow ? settingsWindow : main;
+    GetWindowRect(owner, &parent);
     HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME, kSettingsClass,
-        context->global ? L"DriveTempMon settings" : L"Drive temperature limits", WS_CAPTION | WS_SYSMENU,
+        nickname ? L"Nickname" : context->global ? L"DriveTempMon settings" : L"Drive temperature limits", WS_CAPTION | WS_SYSMENU,
         parent.left + px(24), parent.top + px(24), outer.right - outer.left, outer.bottom - outer.top,
-        main, nullptr, instance, context);
+        owner, nullptr, instance, context);
     if (!window) { delete context; return; }
+    if (owner != main) EnableWindow(owner, FALSE);
     settingsWindow = window;
     ShowWindow(window, SW_SHOWNORMAL);
     SetForegroundWindow(window);
@@ -969,7 +1093,21 @@ LRESULT CALLBACK SettingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
         std::wstring title = context->global ? L"Defaults for drives without custom limits" :
             app.find(context->id) ? app.find(context->id)->name : L"Drive";
-        control(L"STATIC", title.c_str(), SS_LEFT | SS_NOPREFIX, 20, 18, 360, 40, 0);
+        control(L"STATIC", title.c_str(), SS_LEFT | SS_NOPREFIX, 20, 18, context->global || context->nickname ? 360 : 250, 40, 0);
+        if (context->nickname) {
+            control(L"STATIC", L"Nickname (leave blank to use the original name)", SS_LEFT, 20, 66, 360, 24, 0);
+            const auto found = app.settings.nicknames.find(context->id);
+            context->edits[0] = control(L"EDIT", found == app.settings.nicknames.end() ? L"" : found->second.c_str(),
+                WS_TABSTOP | ES_AUTOHSCROLL, 20, 92, 350, 28, 310);
+            SendMessageW(context->edits[0], EM_SETLIMITTEXT, 64, 0);
+            control(L"BUTTON", L"Cancel", WS_TABSTOP | BS_PUSHBUTTON, 192, 142, 82, 30, kCancelButton);
+            control(L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 286, 142, 84, 30, kSaveButton);
+            SetFocus(context->edits[0]);
+            SendMessageW(context->edits[0], EM_SETSEL, 0, -1);
+            return 0;
+        }
+        if (!context->global)
+            control(L"BUTTON", L"Nickname", WS_TABSTOP | BS_PUSHBUTTON, 282, 18, 88, 30, kNicknameButton);
         const std::array<const wchar_t*, 3> labels{L"Yellow at (\u00b0C)", L"Orange at (\u00b0C)", L"Red / alert above (\u00b0C)"};
         for (unsigned i = 0; i != 3; ++i) {
             control(L"STATIC", labels[i], SS_LEFT, 20, 72 + static_cast<int>(i) * 36, 235, 24, 0);
@@ -1017,6 +1155,30 @@ LRESULT CALLBACK SettingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     case WM_COMMAND: {
         const int command = LOWORD(wParam);
         if (command == kCancelButton || command == IDCANCEL) { DestroyWindow(window); return 0; }
+        if (command == kNicknameButton && !context->global && !context->nickname) {
+            app.showSettings(context->id, true);
+            return 0;
+        }
+        if (context->nickname && (command == kSaveButton || command == IDOK)) {
+            wchar_t text[65]{};
+            GetWindowTextW(context->edits[0], text, 65);
+            std::wstring name = text;
+            const auto first = name.find_first_not_of(L" \t\r\n");
+            name = first == std::wstring::npos ? L"" : name.substr(first, name.find_last_not_of(L" \t\r\n") - first + 1);
+            dtm::Settings next = app.settings;
+            if (name.empty()) next.nicknames.erase(context->id);
+            else next.nicknames[context->id] = name;
+            std::wstring error;
+            if (!app.smoke && !dtm::saveSettings(next, &error)) {
+                MessageBoxW(window, error.c_str(), L"Could not save nickname", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+            app.settings = std::move(next);
+            app.stopSpeech();
+            app.applyReadings();
+            DestroyWindow(window);
+            return 0;
+        }
         if (command == kDefaultsButton) {
             if (context->global) {
                 const dtm::Settings defaults;
@@ -1113,12 +1275,18 @@ LRESULT CALLBACK SettingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
             SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
-    case WM_NCDESTROY:
-        if (app.settingsWindow == window) app.settingsWindow = nullptr;
+    case WM_NCDESTROY: {
+        HWND owner = GetWindow(window, GW_OWNER);
+        if (app.settingsWindow == window) app.settingsWindow = owner != app.main && IsWindow(owner) ? owner : nullptr;
+        if (context->nickname && !app.finishing && IsWindow(owner)) {
+            EnableWindow(owner, TRUE);
+            SetForegroundWindow(owner);
+        }
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         if (context->font) DeleteObject(context->font);
         delete context;
         return DefWindowProcW(window, message, wParam, lParam);
+    }
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -1149,7 +1317,7 @@ LRESULT CALLBACK PopupProc(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         if (drive) {
             SelectObject(dc, app.normalFont);
             RECT name{app.px(18), app.px(43), bounds.right - app.px(120), app.px(88)};
-            DrawTextW(dc, drive->name.c_str(), -1, &name, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DrawTextW(dc, app.displayName(*drive).c_str(), -1, &name, DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
             SelectObject(dc, app.titleFont);
             RECT temp{bounds.right - app.px(116), app.px(44), bounds.right - app.px(16), app.px(85)};
             const auto text = TempText(*drive);
@@ -1233,9 +1401,17 @@ LRESULT CALLBACK MainProc(HWND window, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_ERASEBKGND: return 1;
     case WM_MEASUREITEM:
+        if (reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->CtlType == ODT_MENU) {
+            app->measureMenuDrive(*reinterpret_cast<MEASUREITEMSTRUCT*>(lParam));
+            return TRUE;
+        }
         reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = static_cast<UINT>(app->px(58));
         return TRUE;
     case WM_DRAWITEM:
+        if (reinterpret_cast<DRAWITEMSTRUCT*>(lParam)->CtlType == ODT_MENU) {
+            app->drawMenuDrive(*reinterpret_cast<DRAWITEMSTRUCT*>(lParam));
+            return TRUE;
+        }
         if (wParam == kDriveList) { app->drawDrive(*reinterpret_cast<DRAWITEMSTRUCT*>(lParam)); return TRUE; }
         break;
     case WM_CTLCOLORLISTBOX:

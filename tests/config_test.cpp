@@ -23,6 +23,9 @@ int main() {
     const std::wstring second = L"Samsung-\u0394-serial-2";
     s.drives[first] = {31,41,51,false};
     s.drives[second] = {36,46,56,true};
+    s.nicknames[first] = L"\u0623\u0644\u0639\u0627\u0628 & [SSD]";
+    s.nicknames[L"new-drive"] = L"Backups";
+    s.nicknames[L"empty-nickname"] = L"";
     std::wstring error;
     require(saveSettings(s,&error), "atomic save succeeds");
     Settings read = loadSettings();
@@ -33,6 +36,8 @@ int main() {
     require(forDrive(read,first).red == 51 && !forDrive(read,first).alert, "unicode identity and alert persist");
     require(forDrive(read,second).red == 56 && forDrive(read,second).alert, "distinct drive override persists");
     require(forDrive(read,L"new-drive").red == 55, "new drive inherits defaults");
+    require(read.nicknames.size() == 2 && read.nicknames.at(first) == s.nicknames.at(first), "unicode nickname persists; empty nickname omitted");
+    require(read.nicknames.at(L"new-drive") == L"Backups" && read.drives.count(L"new-drive") == 0, "nickname does not create a threshold override");
     Settings invalid = read;
     invalid.hotSeconds = invalid.pollSeconds + 1;
     require(!saveSettings(invalid,&error) && !error.empty(), "reject invalid intervals");
@@ -43,8 +48,12 @@ int main() {
     markPortableLaunched();
     require(!portableFirstLaunch(), "portable launch marker persists");
     read.defaults.red = 57;
+    read.nicknames.erase(first);
     require(saveSettings(read,&error) && !portableFirstLaunch(), "saving settings preserves launch marker");
     require(loadSettings().defaults.red == 57, "replacement readable after earlier reads");
+    const auto renamed = loadSettings();
+    require(renamed.nicknames.count(first) == 0 && renamed.drives.at(first).red == 51, "clearing nickname preserves drive override");
+    require(renamed.nicknames.at(L"new-drive") == L"Backups" && forDrive(renamed,L"new-drive").red == 57, "nicknamed drive still follows updated defaults");
     DeleteFileW(settingsPath().c_str());
     const std::wstring seen = std::wstring(unique) + L"\\portable-seen.ini";
     DeleteFileW(seen.c_str());

@@ -125,18 +125,33 @@ Settings loadSettings() {
         const auto id = fromHex(hex);
         if (!id.empty()) s.drives[id] = readThresholds(pSection,file,s.defaults);
     }
+    for (const wchar_t* pSection = sections.data(); *pSection; pSection += wcslen(pSection)+1) {
+        if (wcsncmp(pSection,L"Nickname_",9) != 0 || s.nicknames.size() >= 256) continue;
+        wchar_t hex[8193]{};
+        GetPrivateProfileStringW(pSection,L"IdHex",L"",hex,8193,file.c_str());
+        const auto id = fromHex(hex);
+        GetPrivateProfileStringW(pSection,L"NameHex",L"",hex,8193,file.c_str());
+        const auto nickname = fromHex(hex);
+        if (!id.empty() && !nickname.empty() && nickname.size() <= 64) s.nicknames[id] = nickname;
+    }
     return s;
 }
 bool saveSettings(const Settings& s, std::wstring* error) {
     if (!validThresholds(s.defaults) || s.pollSeconds < 1 || s.pollSeconds > 3600 ||
         s.hotSeconds < 1 || s.hotSeconds > 60 || s.hotSeconds > s.pollSeconds ||
-        s.speechGapSeconds < 1 || s.speechGapSeconds > 300 || s.drives.size() > 256) {
+        s.speechGapSeconds < 1 || s.speechGapSeconds > 300 || s.drives.size() > 256 || s.nicknames.size() > 256) {
         if (error) *error = L"Invalid temperatures or intervals.";
         return false;
     }
     for (const auto& entry : s.drives) {
         if (!validThresholds(entry.second) || entry.first.empty() || entry.first.size() > 2048) {
             if (error) *error = L"Invalid drive settings.";
+            return false;
+        }
+    }
+    for (const auto& entry : s.nicknames) {
+        if (entry.first.empty() || entry.first.size() > 2048 || entry.second.size() > 64) {
+            if (error) *error = L"Invalid drive nickname.";
             return false;
         }
     }
@@ -149,6 +164,11 @@ bool saveSettings(const Settings& s, std::wstring* error) {
     for (const auto& entry : s.drives) {
         out << L"\r\n[Drive_" << hashKey(entry.first) << L"]\r\nIdHex=" << toHex(entry.first) << L"\r\n";
         appendThresholds(out,entry.second);
+    }
+    for (const auto& entry : s.nicknames) {
+        if (!entry.second.empty())
+            out << L"\r\n[Nickname_" << hashKey(entry.first) << L"]\r\nIdHex=" << toHex(entry.first)
+                << L"\r\nNameHex=" << toHex(entry.second) << L"\r\n";
     }
     const auto contents = std::wstring(1,static_cast<wchar_t>(0xfeff)) + out.str();
     const auto target = settingsPath();

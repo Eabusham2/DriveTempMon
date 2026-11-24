@@ -69,8 +69,8 @@ drive does not immediately reopen a dismissed popup.
 ### Fullscreen alerts
 
 During a fullscreen application, popups are suppressed and Windows speech says,
-for example, "Your SSD Samsung990 is 53 degrees Celsius." The spoken device alias
-is at most ten characters. Speech finishes before the five-second repeat gap
+for example, "Your SSD Samsung990 is 53 degrees Celsius." A saved nickname is
+spoken in full; otherwise the automatic device alias is at most ten characters. Speech finishes before the five-second repeat gap
 starts; utterances do not stack up. Several hot drives take turns.
 
 When fullscreen ends, speech stops and any active, undismissed alerts return as
@@ -89,6 +89,7 @@ speech service. Speech and beeps can each be turned off in Settings.
 | Single left click on the tray icon | Open the small main window |
 | Right click on the tray icon | Open at the top, each drive's color/name/temperature, Close at the bottom |
 | Click a drive in the tray menu or main window | Edit that drive's thresholds and alert setting |
+| Drive settings → Nickname | Save a name for the tray and alerts; the original stays beside it in smaller gray text in the drive list and tray menu. Leave blank to restore the original name. |
 | Middle click on the tray icon | Quit the app |
 | Main-window Settings | Edit defaults, intervals, beeps, and fullscreen speech |
 | Main-window To tray | Hide the window and keep monitoring |

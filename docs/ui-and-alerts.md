@@ -31,7 +31,8 @@ suppresses overlays for modern borderless games. This is not an injected game
 hook or a guarantee that every graphics driver classifies exclusive mode alike.
 
 During fullscreen, the application constructs one utterance containing the current
-undismissed hot drives. Each drive name is at most ten characters. It waits for the
+undismissed hot drives. Saved nicknames are spoken in full; automatic drive aliases
+remain at most ten characters. It waits for the
 SAPI [`SPEI_END_INPUT_STREAM`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ms720164(v=vs.85))
 completion event, then starts the configured silence timer before repeating. The
 event arrives through

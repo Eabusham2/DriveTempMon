@@ -21,6 +21,7 @@ struct Settings {
     bool speech = true;
     Thresholds defaults;
     std::map<std::wstring, Thresholds> drives;
+    std::map<std::wstring, std::wstring> nicknames;
 };
 struct Drive {
     std::wstring id;
